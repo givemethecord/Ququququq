@@ -1,96 +1,68 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>실시간 호가 수치 차트</title>
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
-    <style>
-        body { background-color: #121212; color: #ffffff; margin: 0; font-family: sans-serif; }
-        #header { padding: 10px; background: #1e1e1e; font-weight: bold; color: #00ffcc; font-size: 14px; }
-        #chart-container { position: relative; width: 100vw; height: calc(100vh - 40px); }
-        #number-overlay {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            pointer-events: none;
-            font-family: monospace;
-            font-size: 12px;
-            line-height: 1.5;
-            background: rgba(0, 0, 0, 0.85);
-            padding: 8px;
-            border-radius: 6px;
-            border: 1px solid #333;
-            z-index: 10;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BTCUSDT Order Book</title>
+  <style>
+    body { background-color: #131722; color: #d1d4dc; font-family: sans-serif; margin: 0; padding: 10px; }
+    #status { padding: 8px; font-weight: bold; background: #2a2e39; margin-bottom: 10px; border-radius: 4px; }
+    .container { display: flex; flex-direction: column; gap: 10px; }
+    .board { background: #1e222d; padding: 10px; border-radius: 4px; }
+    .row { display: flex; justify-content: space-between; padding: 3px 0; font-family: monospace; font-size: 14px; }
+    .ask { color: #f23645; }
+    .bid { color: #089981; }
+  </style>
 </head>
 <body>
 
-    <div id="header">BTCUSDT 실시간 호가 잔량</div>
+  <div id="status">연결 시도 중...</div>
 
-    <div id="chart-container">
-        <div id="number-overlay">호가 수신 대기 중...</div>
+  <div class="container">
+    <div class="board">
+      <h4 style="margin:0 0 5px 0; color:#f23645;">매도 잔량 (Asks)</h4>
+      <div id="asks"></div>
     </div>
+    <div class="board">
+      <h4 style="margin:0 0 5px 0; color:#089981;">매수 잔량 (Bids)</h4>
+      <div id="bids"></div>
+    </div>
+  </div>
 
-    <script>
-        const chartContainer = document.getElementById('chart-container');
-        const chart = LightweightCharts.createChart(chartContainer, {
-            width: chartContainer.clientWidth,
-            height: chartContainer.clientHeight,
-            layout: { background: { color: '#131722' }, textColor: '#d1d4dc' },
-            grid: { vertLines: { color: '#1f293d' }, horzLines: { color: '#1f293d' } },
-            rightPriceScale: { borderColor: '#2b2b43' },
-            timeScale: { borderColor: '#2b2b43', timeVisible: true },
-        });
+  <script>
+    const statusEl = document.getElementById('status');
+    const asksEl = document.getElementById('asks');
+    const bidsEl = document.getElementById('bids');
 
-        const candlestickSeries = chart.addCandlestickSeries({
-            upColor: '#26a69a', downColor: '#ef5350',
-            borderDownColor: '#ef5350', borderUpColor: '#26a69a',
-            wickDownColor: '#ef5350', wickUpColor: '#26a69a',
-        });
+    const ws = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@depth10@100ms');
 
-        fetch('https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=100')
-            .then(res => res.json())
-            .then(data => {
-                const formatted = data.map(d => ({
-                    time: d[0] / 1000,
-                    open: parseFloat(d[1]),
-                    high: parseFloat(d[2]),
-                    low: parseFloat(d[3]),
-                    close: parseFloat(d[4]),
-                }));
-                candlestickSeries.setData(formatted);
-            });
+    ws.onopen = () => {
+      statusEl.innerText = "✅ 바이낸스 실시간 연결 성공!";
+      statusEl.style.color = "#089981";
+    };
 
-        const symbol = "btcusdt";
-        const ws = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@depth10@100ms');
-        const overlayEl = document.getElementById('number-overlay');
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (!data.bids || !data.asks) return;
 
-        ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            if (data.e === "depthUpdate") {
-                const asks = data.a.slice(0, 5).reverse();
-                const bids = data.b.slice(0, 5);
+      asksEl.innerHTML = data.asks.slice(0, 5).reverse().map(item => 
+        `<div class="row ask"><span>${parseFloat(item[0]).toFixed(2)}</span><span>${parseFloat(item[1]).toFixed(4)}</span></div>`
+      ).join('');
 
-                let html = "<b style='color:#ef5350;'>[매도 잔량]</b><br>";
-                asks.forEach(item => {
-                    html += `${parseFloat(item[0]).toFixed(1)} : <span style='color:#ffaa00; font-weight:bold;'>${parseFloat(item[1]).toFixed(3)} BTC</span><br>`;
-                });
-                html += "<hr style='border-color:#444; margin: 4px 0;'>";
-                html += "<b style='color:#26a69a;'>[매수 잔량]</b><br>";
-                bids.forEach(item => {
-                    html += `${parseFloat(item[0]).toFixed(1)} : <span style='color:#00aaff; font-weight:bold;'>${parseFloat(item[1]).toFixed(3)} BTC</span><br>`;
-                });
+      bidsEl.innerHTML = data.bids.slice(0, 5).map(item => 
+        `<div class="row bid"><span>${parseFloat(item[0]).toFixed(2)}</span><span>${parseFloat(item[1]).toFixed(4)}</span></div>`
+      ).join('');
+    };
 
-                overlayEl.innerHTML = html;
-            }
-        };
+    ws.onerror = (err) => {
+      statusEl.innerText = "❌ 연결 에러 발생 (네트워크 확인 필요)";
+      statusEl.style.color = "#f23645";
+    };
 
-        window.addEventListener('resize', () => {
-            chart.applyOptions({ width: chartContainer.clientWidth, height: chartContainer.clientHeight });
-        });
-    </script>
+    ws.onclose = () => {
+      statusEl.innerText = "⚠️ 연결 종료됨";
+      statusEl.style.color = "#f7a600";
+    };
+  </script>
 </body>
 </html>
-
