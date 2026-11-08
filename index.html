@@ -31,15 +31,15 @@
 </head>
 <body>
 
-  <div id="status">⚡ 실시간 북맵 히트맵 엔진 초기화 중...</div>
+  <div id="status">⚡ 데이터 수신 대기 중...</div>
 
   <div class="bookmap-container">
     <canvas id="bookmapCanvas"></canvas>
   </div>
   <div class="legend">
-    <span>🟥 매도 매물대 (Asks)</span>
-    <span>🟢/🔴 시장가 체결 (Trade Bubble)</span>
-    <span>🟩 매수 매물대 (Bids)</span>
+    <span>🟥 매도 띠 (Asks)</span>
+    <span>🟢/🔴 체결 (Trades)</span>
+    <span>🟩 매수 띠 (Bids)</span>
   </div>
 
   <script>
@@ -57,38 +57,35 @@
     let currentPrice = 0;
     let orderBook = { bids: [], asks: [] };
     let trades = [];
-    const history = []; // 히트맵 띠 기록
-    const maxHistory = 300;
+    let history = []; 
+    const maxHistory = 200;
 
-    // 바이낸스 웹소켓 (선물 뎁스 + 체결 데이터)
     const wsDepth = new WebSocket('wss://fstream.binance.com/ws/btcusdt@depth20@100ms');
     const wsTrade = new WebSocket('wss://fstream.binance.com/ws/btcusdt@aggTrade');
 
     wsDepth.onopen = () => {
-      statusEl.innerText = "⚡ 실시간 북맵 히트맵 작동 중 (바이낸스 연결됨)";
+      statusEl.innerText = "⚡ 바이낸스 뎁스 연결됨 (데이터 수신 중)";
       statusEl.style.color = "#089981";
     };
 
     wsDepth.onmessage = (e) => {
       const data = JSON.parse(e.data);
-      if (!data.bids || !data.asks) return;
+      if (!data.bids || !data.asks || data.bids.length === 0) return;
 
       orderBook.bids = data.bids.map(b => [parseFloat(b[0]), parseFloat(b[1])]);
       orderBook.asks = data.asks.map(a => [parseFloat(a[0]), parseFloat(a[1])]);
 
-      if (orderBook.bids.length > 0) {
-        currentPrice = (orderBook.bids[0][0] + orderBook.asks[0][0]) / 2;
-      }
+      currentPrice = (orderBook.bids[0][0] + orderBook.asks[0][0]) / 2;
 
-      // 현재 시점의 호가 맵 기록 (히트맵 띠 형성)
       history.push({
         price: currentPrice,
         bids: [...orderBook.bids],
-        asks: [...orderBook.asks],
-        time: Date.now()
+        asks: [...orderBook.asks]
       });
 
       if (history.length > maxHistory) history.shift();
+      statusEl.innerText = `⚡ BTC 실시간 가격: ${currentPrice.toFixed(2)} USD`;
+      statusEl.style.color = "#089981";
     };
 
     wsTrade.onmessage = (e) => {
@@ -96,81 +93,73 @@
       trades.push({
         price: parseFloat(data.p),
         qty: parseFloat(data.q),
-        isMaker: data.m, // true: 매도체결, false: 매수체결
+        isMaker: data.m,
         x: canvas.width - 60,
         time: Date.now()
       });
-      if (trades.length > 50) trades.shift();
+      if (trades.length > 40) trades.shift();
     };
 
-    // 북맵 렌더링 루프
     function draw() {
       ctx.fillStyle = '#0b0e14';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      if (!currentPrice || history.length === 0) {
-        requestAnimationFrame(draw);
-        return;
-      }
+      if (currentPrice > 0 && history.length > 0) {
+        // 상하 폭을 현재 가격 기준으로 자동 설정 ($100 밴드)
+        const range = 100; 
+        const minP = currentPrice - range / 2;
+        const maxP = currentPrice + range / 2;
 
-      const range = 50; // 가격 범위 ($50 밴드)
-      const minP = currentPrice - range / 2;
-      const maxP = currentPrice + range / 2;
+        const getY = (p) => canvas.height - ((p - minP) / (maxP - minP)) * canvas.height;
+        const colWidth = (canvas.width - 60) / maxHistory;
 
-      const getY = (p) => canvas.height - ((p - minP) / (maxP - minP)) * canvas.height;
-      const colWidth = (canvas.width - 60) / maxHistory;
+        // 1. 히트맵 띠 그리기
+        for (let i = 0; i < history.length; i++) {
+          const snap = history[i];
+          const x = i * colWidth;
 
-      // 1. 배경 매물대 히트맵 띠 그리기
-      for (let i = 0; i < history.length; i++) {
-        const snap = history[i];
-        const x = i * colWidth;
+          snap.asks.forEach(([p, q]) => {
+            const y = getY(p);
+            const alpha = Math.min(0.9, q / 3);
+            ctx.fillStyle = `rgba(242, 54, 69, ${alpha})`;
+            ctx.fillRect(x, y, colWidth + 1, 4);
+          });
 
-        // 매도 잔량 띠 (빨간색)
-        snap.asks.forEach(([p, q]) => {
-          const y = getY(p);
-          const alpha = Math.min(0.8, q / 5); // 수량 많을수록 진함
-          ctx.fillStyle = `rgba(242, 54, 69, ${alpha})`;
-          ctx.fillRect(x, y, colWidth + 1, 3);
-        });
+          snap.bids.forEach(([p, q]) => {
+            const y = getY(p);
+            const alpha = Math.min(0.9, q / 3);
+            ctx.fillStyle = `rgba(8, 153, 129, ${alpha})`;
+            ctx.fillRect(x, y, colWidth + 1, 4);
+          });
+        }
 
-        // 매수 잔량 띠 (초록색)
-        snap.bids.forEach(([p, q]) => {
-          const y = getY(p);
-          const alpha = Math.min(0.8, q / 5);
-          ctx.fillStyle = `rgba(8, 153, 129, ${alpha})`;
-          ctx.fillRect(x, y, colWidth + 1, 3);
-        });
-      }
-
-      // 2. 중앙 실시간 가격 선
-      const currentY = getY(currentPrice);
-      ctx.strokeStyle = '#2962ff';
-      ctx.setLineDash([4, 4]);
-      ctx.beginPath();
-      ctx.moveTo(0, currentY);
-      ctx.lineTo(canvas.width - 60, currentY);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // 3. 시장가 체결 버블 (Market Trades)
-      trades.forEach(t => {
-        const y = getY(t.price);
-        const radius = Math.min(15, Math.max(3, Math.sqrt(t.qty) * 4));
+        // 2. 현재가 기준선
+        const currentY = getY(currentPrice);
+        ctx.strokeStyle = '#2962ff';
+        ctx.setLineDash([3, 3]);
         ctx.beginPath();
-        ctx.arc(t.x, y, radius, 0, Math.PI * 2);
-        ctx.fillStyle = t.isMaker ? 'rgba(242, 54, 69, 0.7)' : 'rgba(8, 153, 129, 0.7)';
-        ctx.fill();
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 0.5;
+        ctx.moveTo(0, currentY);
+        ctx.lineTo(canvas.width - 60, currentY);
         ctx.stroke();
-      });
+        ctx.setLineDash([]);
 
-      // 4. 우측 가격 라벨
-      ctx.fillStyle = '#1e222d';
-      ctx.fillRect(canvas.width - 60, 0, 60, canvas.height);
-      ctx.fillStyle = '#d1d4dc';
-      ctx.font = '11px monospace';
-      ctx.fillText(currentPrice.toFixed(1), canvas.width - 55, currentY + 4);
+        // 3. 체결 버블
+        trades.forEach(t => {
+          const y = getY(t.price);
+          const radius = Math.min(12, Math.max(2, Math.sqrt(t.qty) * 3));
+          ctx.beginPath();
+          ctx.arc(t.x, y, radius, 0, Math.PI * 2);
+          ctx.fillStyle = t.isMaker ? 'rgba(242, 54, 69, 0.8)' : 'rgba(8, 153, 129, 0.8)';
+          ctx.fill();
+        });
+
+        // 4. 우측 가격 라벨 배경 및 텍스트
+        ctx.fillStyle = '#1e222d';
+        ctx.fillRect(canvas.width - 60, 0, 60, canvas.height);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 11px monospace';
+        ctx.fillText(currentPrice.toFixed(1), canvas.width - 58, currentY + 4);
+      }
 
       requestAnimationFrame(draw);
     }
