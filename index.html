@@ -3,26 +3,26 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>BTCUSDT Chart & Bookmap</title>
+  <title>BTCUSDT Chart & Bookmap Full</title>
   <style>
-    body { background-color: #0b0e14; color: #d1d4dc; font-family: sans-serif; margin: 0; padding: 10px; }
-    #status { padding: 6px; font-weight: bold; background: #1e222d; margin-bottom: 8px; border-radius: 4px; font-size: 12px; text-align: center; }
+    body { background-color: #0b0e14; color: #d1d4dc; font-family: sans-serif; margin: 0; padding: 8px; }
+    #status { padding: 6px; font-weight: bold; background: #1e222d; margin-bottom: 6px; border-radius: 4px; font-size: 12px; text-align: center; }
     
-    /* 1. 트레이딩뷰 캔들 차트 영역 */
+    /* 1. 시간봉 조절 가능한 트레이딩뷰 차트 영역 */
     .chart-container {
       width: 100%;
-      height: 260px;
+      height: 320px;
       margin-bottom: 8px;
       border-radius: 4px;
       overflow: hidden;
       background: #1e222d;
     }
 
-    /* 2. 북맵 히트맵 캔버스 영역 */
+    /* 2. 북맵 히트맵 영역 */
     .bookmap-container {
       position: relative;
       width: 100%;
-      height: 300px;
+      height: 280px;
       background: #000;
       border: 1px solid #2a2e39;
       border-radius: 4px;
@@ -43,9 +43,9 @@
 </head>
 <body>
 
-  <div id="status">⚡ 바이낸스 차트 & 북맵 엔진 초기화 중...</div>
+  <div id="status">⚡ 차트 & 북맵 엔진 초기화 중...</div>
 
-  <!-- 상단: 캔들 차트 -->
+  <!-- 상단: 캔들 차트 (시간봉 변경 툴바 포함) -->
   <div class="chart-container" id="tv_chart"></div>
 
   <!-- 하단: 북맵 히트맵 (매물대 띠 + 체결 버블) -->
@@ -54,13 +54,13 @@
   </div>
 
   <div class="legend">
-    <span>🟥 매도 잔량 띠 (Asks)</span>
-    <span>🟢/🔴 시장가 체결 (Trades)</span>
-    <span>🟩 매수 잔량 띠 (Bids)</span>
+    <span>🟥 매도 매물대 띠</span>
+    <span>🟢/🔴 시장가 체결 (Trade)</span>
+    <span>🟩 매수 매물대 띠</span>
   </div>
 
   <script>
-    // 1. 트레이딩뷰 위젯 로드
+    // 1. 트레이딩뷰 위젯 (시간봉 변경 툴바 활성화)
     new TradingView.widget({
       "autosize": true,
       "symbol": "BINANCE:BTCUSDT",
@@ -70,7 +70,8 @@
       "style": "1",
       "locale": "kr",
       "enable_publishing": false,
-      "hide_top_toolbar": true,
+      "hide_top_toolbar": false, // 시간봉 선택 툴바 켬
+      "allow_symbol_change": true,
       "container_id": "tv_chart"
     });
 
@@ -95,7 +96,7 @@
     const wsTrade = new WebSocket('wss://fstream.binance.com/ws/btcusdt@aggTrade');
 
     ws.onopen = () => {
-      statusEl.innerText = "⚡ 바이낸스 차트 및 북맵 히트맵 실시간 동기화됨";
+      statusEl.innerText = "⚡ 차트 & 북맵 풀세트 동기화 완료";
       statusEl.style.color = "#089981";
     };
 
@@ -127,32 +128,32 @@
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       if (currentPrice > 0 && history.length > 0) {
-        const range = 80; // 상하 $80 범위 지정가 맵
+        const range = 80;
         const minP = currentPrice - range / 2;
         const maxP = currentPrice + range / 2;
 
         const getY = (p) => canvas.height - ((p - minP) / (maxP - minP)) * canvas.height;
         const colWidth = (canvas.width - 55) / maxHistory;
 
-        // 배경 북맵 매물대 띠 렌더링
+        // 배경 매물대 띠
         for (let i = 0; i < history.length; i++) {
           const snap = history[i];
           const x = i * colWidth;
 
           snap.asks.forEach(([p, q]) => {
             const y = getY(p);
-            ctx.fillStyle = `rgba(242, 54, 69, ${Math.min(0.8, q / 2.5)})`;
+            ctx.fillStyle = `rgba(242, 54, 69, ${Math.min(0.85, q / 2)})`;
             ctx.fillRect(x, y, colWidth + 1, 5);
           });
 
           snap.bids.forEach(([p, q]) => {
             const y = getY(p);
-            ctx.fillStyle = `rgba(8, 153, 129, ${Math.min(0.8, q / 2.5)})`;
+            ctx.fillStyle = `rgba(8, 153, 129, ${Math.min(0.85, q / 2)})`;
             ctx.fillRect(x, y, colWidth + 1, 5);
           });
         }
 
-        // 중앙 현재가 라인
+        // 현재가 선
         const currentY = getY(currentPrice);
         ctx.strokeStyle = '#2962ff';
         ctx.lineWidth = 1;
@@ -166,14 +167,14 @@
         // 시장가 체결 버블
         trades.forEach(t => {
           const y = getY(t.price);
-          const r = Math.min(10, Math.max(2, Math.sqrt(t.qty) * 2.5));
+          const r = Math.min(12, Math.max(2, Math.sqrt(t.qty) * 3));
           ctx.beginPath();
           ctx.arc(t.x, y, r, 0, Math.PI * 2);
           ctx.fillStyle = t.isMaker ? 'rgba(242, 54, 69, 0.85)' : 'rgba(8, 153, 129, 0.85)';
           ctx.fill();
         });
 
-        // 우측 가격 표시판
+        // 우측 가격 표시
         ctx.fillStyle = '#1e222d';
         ctx.fillRect(canvas.width - 55, 0, 55, canvas.height);
         ctx.fillStyle = '#ffffff';
