@@ -64,7 +64,7 @@
             });
 
         const symbol = "btcusdt";
-        const ws = new WebSocket(`wss://fstream.binance.com/ws/${symbol}@depth10@100ms`);
+        const ws = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@depth10@100ms');
         const overlayEl = document.getElementById('number-overlay');
 
         ws.onmessage = (event) => {
