@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>BTCUSDT Pure Canvas Bookmap Engine</title>
+  <title>BTCUSDT Liquidation Heatmap & Chart Engine</title>
   <style>
     body { background-color: #0b0e14; color: #d1d4dc; font-family: sans-serif; margin: 0; padding: 10px; overflow: hidden; }
     #status { padding: 8px; font-weight: bold; background: #1e222d; margin-bottom: 8px; border-radius: 4px; font-size: 12px; text-align: center; color: #089981; }
@@ -38,7 +38,7 @@
 </head>
 <body>
 
-  <div id="status">⚡ 순수 캔버스 북맵 엔진 스케일 조정 중...</div>
+  <div id="status">⚡ 히트맵 + 캔들스틱 통합 엔진 가동 중...</div>
 
   <div class="timeframe-bar">
     <button class="tf-btn active" onclick="changeTimeframe('1m', event)">1분</button>
@@ -52,9 +52,9 @@
   </div>
 
   <div class="legend">
-    <span>🟥 매도 띠 (Asks)</span>
+    <span>🟥 매도/청산 히트맵 (Asks)</span>
     <span>🕯️ 캔들스틱 + 체결 버블</span>
-    <span>🟩 매수 띠 (Bids)</span>
+    <span>🟩 매수/청산 히트맵 (Bids)</span>
   </div>
 
   <script>
@@ -106,7 +106,7 @@
     let latestDepth = { bids: [], asks: [] };
 
     wsDepth.onopen = () => {
-      statusEl.innerText = "⚡ 북맵 히트맵 스케일 정상화 완료";
+      statusEl.innerText = "⚡ 히트맵 데이터 스트리밍 연결 완료";
       statusEl.style.color = "#089981";
     };
 
@@ -149,25 +149,26 @@
       }
     };
 
+    // 0.1초마다 뎁스를 레일에 밀어 넣어 히트맵 띠 형성
     setInterval(() => {
       if (latestDepth.bids.length > 0) {
-        orderbookRail.push(latestDepth);
+        orderbookRail.push(JSON.parse(JSON.stringify(latestDepth)));
         if (orderbookRail.length > maxColumns) {
           orderbookRail.shift();
         }
       }
-    }, 150);
+    }, 100);
 
     function render() {
       ctx.fillStyle = '#05070a';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      if (currentPrice > 0 && candles.length > 0) {
+      if (candles.length > 0 && currentPrice > 0) {
         const rightSpace = 85;
         const chartWidth = canvas.width - rightSpace;
         const chartHeight = canvas.height;
 
-        // 핵심 수정: 현재 화면에 표시된 캔들들의 최고가/최저가를 기준으로 가격 스케일을 동적으로 잡되, 오더북 범위까지 완벽히 커버하도록 함
+        // 캔들 가격 범위를 기반으로 하되 현재가를 중심으로 상하 폭을 넉넉히 잡아 히트맵이 압축되지 않게 함
         let minPrice = Infinity;
         let maxPrice = -Infinity;
 
@@ -176,25 +177,26 @@
           if (c.high > maxPrice) maxPrice = c.high;
         });
 
-        // 위아래로 여유 공간(Padding)을 널찍하게 줘서 매물대 띠가 화면 전체에 퍼지도록 함
-        const padding = (maxPrice - minPrice) * 0.15 || 200;
-        minPrice -= padding;
-        maxPrice += padding;
+        // 가격 폭이 너무 좁거나 치우치지 않도록 현재가 기준 최소 ±$500 이상 보장
+        const span = Math.max(maxPrice - minPrice, 800);
+        const center = (maxPrice + minPrice) / 2;
+        minPrice = center - span / 1.5;
+        maxPrice = center + span / 1.5;
 
         const getY = (p) => chartHeight - ((p - minPrice) / (maxPrice - minPrice)) * chartHeight;
 
-        // 그리드 선
+        // 배경 그리드
         ctx.strokeStyle = '#161a25';
         ctx.lineWidth = 1;
-        for (let i = 1; i <= 5; i++) {
-          const y = (chartHeight / 6) * i;
+        for (let i = 1; i <= 6; i++) {
+          const y = (chartHeight / 7) * i;
           ctx.beginPath();
           ctx.moveTo(0, y);
           ctx.lineTo(chartWidth, y);
           ctx.stroke();
         }
 
-        // [LAYER 1] 북맵 수평 히트맵 띠 (확장된 가격 스케일에 맞춰 렌더링)
+        // [LAYER 1] 배경: 히트맵 / 청산 레일 띠 렌더링
         while (orderbookRail.length < maxColumns) {
           orderbookRail.unshift(latestDepth);
         }
@@ -208,9 +210,9 @@
             snap.asks.forEach(([p, q]) => {
               const y = getY(p);
               if (y >= 0 && y <= chartHeight) {
-                const alpha = Math.min(0.9, q / 1.5);
+                const alpha = Math.min(0.95, q / 1.0);
                 ctx.fillStyle = `rgba(242, 54, 69, ${alpha})`;
-                ctx.fillRect(x, y - 1, colWidth + 0.8, 3);
+                ctx.fillRect(x, y - 1, colWidth + 1, 3);
               }
             });
           }
@@ -219,16 +221,16 @@
             snap.bids.forEach(([p, q]) => {
               const y = getY(p);
               if (y >= 0 && y <= chartHeight) {
-                const alpha = Math.min(0.9, q / 1.5);
+                const alpha = Math.min(0.95, q / 1.0);
                 ctx.fillStyle = `rgba(8, 153, 129, ${alpha})`;
-                ctx.fillRect(x, y - 1, colWidth + 0.8, 3);
+                ctx.fillRect(x, y - 1, colWidth + 1, 3);
               }
             });
           }
         }
 
-        // [LAYER 2] 캔들스틱 렌더링
-        const candleWidth = Math.max(2, chartWidth / candles.length - 3);
+        // [LAYER 2] 전경: 캔들스틱 렌더링
+        const candleWidth = Math.max(2, chartWidth / candles.length - 2);
         candles.forEach((c, index) => {
           const cx = (index / candles.length) * chartWidth;
           const isUp = c.close >= c.open;
@@ -250,15 +252,14 @@
         // [LAYER 3] 체결 버블
         const now = Date.now();
         tradeList.forEach(t => {
-          const age = now - t.time;
-          if (age < 8000) {
-            const bx = chartWidth - 45;
+          if (now - t.time < 5000) {
+            const bx = chartWidth - 40;
             const by = getY(t.price);
             if (by >= 0 && by <= chartHeight) {
               const r = Math.min(14, Math.max(2, Math.sqrt(t.qty) * 2.2));
               ctx.beginPath();
               ctx.arc(bx, by, r, 0, Math.PI * 2);
-              ctx.fillStyle = t.isMaker ? 'rgba(242, 54, 69, 0.85)' : 'rgba(8, 153, 129, 0.85)';
+              ctx.fillStyle = t.isMaker ? 'rgba(242, 54, 69, 0.9)' : 'rgba(8, 153, 129, 0.9)';
               ctx.fill();
               ctx.strokeStyle = '#ffffff';
               ctx.lineWidth = 0.5;
@@ -267,7 +268,7 @@
           }
         });
 
-        // [LAYER 4] 우측 가격 스케일 패널 & 현재가 수평선
+        // [LAYER 4] 우측 가격 패널 & 현재가 라인
         ctx.fillStyle = '#1e222d';
         ctx.fillRect(chartWidth, 0, rightSpace, chartHeight);
 
