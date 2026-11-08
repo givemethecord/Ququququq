@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>BTCUSDT Perfect Bookmap Overlay</title>
+  <title>BTCUSDT Real Heatmap Overlay</title>
   <style>
     body { background-color: #0b0e14; color: #d1d4dc; font-family: sans-serif; margin: 0; padding: 10px; }
     #status { padding: 8px; font-weight: bold; background: #1e222d; margin-bottom: 8px; border-radius: 4px; font-size: 12px; text-align: center; color: #089981; }
@@ -27,8 +27,18 @@
     }
     
     #tv-chart {
-      width: 100%;
-      height: 100%;
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      z-index: 1;
+    }
+
+    #heatmap-canvas {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      z-index: 2;
+      pointer-events: none;
     }
 
     .legend {
@@ -39,7 +49,7 @@
 </head>
 <body>
 
-  <div id="status">⚡ 북맵 오버레이 좌표 동기화 엔진 가동 중...</div>
+  <div id="status">⚡ 수평 히트맵 레일 엔진 가동 중...</div>
 
   <div class="timeframe-bar">
     <button class="tf-btn active" onclick="changeTimeframe('1m', event)">1분</button>
@@ -50,20 +60,23 @@
 
   <div class="chart-container">
     <div id="tv-chart"></div>
+    <canvas id="heatmap-canvas"></canvas>
   </div>
 
   <div class="legend">
-    <span>🟥 매도 매물대 띠 (Asks)</span>
+    <span>🟥 매도 띠 (Asks Heatmap)</span>
     <span>🕯️ 캔들스틱 + 체결 버블</span>
-    <span>🟩 매수 매물대 띠 (Bids)</span>
+    <span>🟩 매수 띠 (Bids Heatmap)</span>
   </div>
 
   <script>
     const statusEl = document.getElementById('status');
     const container = document.querySelector('.chart-container');
+    const canvas = document.getElementById('heatmap-canvas');
+    const ctx = canvas.getContext('2d');
 
     const chart = LightweightCharts.createChart(document.getElementById('tv-chart'), {
-      layout: { backgroundColor: '#05070a', textColor: '#d1d4dc' },
+      layout: { backgroundColor: 'transparent', textColor: '#d1d4dc' },
       grid: { vertLines: { color: '#161a25' }, horzLines: { color: '#161a25' } },
       crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
       priceScale: { borderColor: '#2a2e39' },
@@ -76,16 +89,19 @@
       wickUpColor: '#089981', wickDownColor: '#f23645'
     });
 
-    function resizeChart() {
+    function resizeCanvas() {
+      canvas.width = container.clientWidth;
+      canvas.height = container.clientHeight;
       chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
     }
-    resizeChart();
-    window.addEventListener('resize', resizeChart);
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
 
     let currentTF = '1m';
-    let latestDepth = { bids: [], asks: [] };
+    let historyRail = []; // 북맵처럼 가로로 흘러가는 오더북 스냅샷 큐
     let tradeList = [];
     let currentPrice = 0;
+    const maxColumns = 180; // 화면에 유지할 가로 띠 칸 수
 
     async function loadKlines(tf) {
       try {
@@ -112,12 +128,13 @@
       loadKlines(tf);
     }
 
-    // 바이낸스 선물 웹소켓 연결
     const wsDepth = new WebSocket('wss://fstream.binance.com/ws/btcusdt@depth20@100ms');
     const wsTrade = new WebSocket('wss://fstream.binance.com/ws/btcusdt@aggTrade');
 
+    let latestDepth = { bids: [], asks: [] };
+
     wsDepth.onopen = () => {
-      statusEl.innerText = "⚡ 북맵 히트맵 실시간 연동 완료";
+      statusEl.innerText = "⚡ 오리지널 수평 히트맵 띠 연동 완료";
       statusEl.style.color = "#089981";
     };
 
@@ -127,6 +144,7 @@
         if (!data.b || !data.a) return;
 
         latestDepth = {
+          time: Math.floor(Date.now() / 1000),
           bids: data.b.map(b => [parseFloat(b[0]), parseFloat(b[1])]),
           asks: data.a.map(a => [parseFloat(a[0]), parseFloat(a[1])])
         };
@@ -148,7 +166,7 @@
           isMaker: data.m,
           time: time
         });
-        if (tradeList.length > 50) tradeList.shift();
+        if (tradeList.length > 60) tradeList.shift();
 
         candleSeries.update({
           time: time,
@@ -159,115 +177,72 @@
       }
     };
 
-    // 트레이딩뷰 차트의 커스텀 렌더링 플러그인(PaneView) 구현
-    // 이 방식을 쓰면 차트 캔버스 내부에서 캔들과 북맵 띠가 완벽하게 한 좌표계로 동기화됨
-    class BookmapOverlayRenderer {
-      constructor(dataGetter, tradeGetter) {
-        this._dataGetter = dataGetter;
-        this._tradeGetter = tradeGetter;
+    // 0.2초마다 오더북 스냅샷을 우측 레일에 밀어 넣어 수평 띠가 가로로 길게 쌓이도록 함
+    setInterval(() => {
+      if (latestDepth.bids.length > 0) {
+        historyRail.push(latestDepth);
+        if (historyRail.length > maxColumns) {
+          historyRail.shift();
+        }
       }
+    }, 200);
 
-      draw(target) {
-        target.useBitmapCoordinateSpace(scope => {
-          const ctx = scope.context;
-          const priceScale = candleSeries.priceScale();
-          const timeScale = chart.timeScale();
+    function renderOverlay() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-          const depth = this._dataGetter();
-          const trades = this._tradeGetter();
+      const timeScale = chart.timeScale();
 
-          if (!depth || depth.bids.length === 0) return;
+      if (historyRail.length > 0 && currentPrice > 0) {
+        // [북맵 히트맵 수평 띠] 각 스냅샷의 시간을 차트 X축 좌표로 변환하여 수평 레일 렌더링
+        for (let i = 0; i < historyRail.length; i++) {
+          const snap = historyRail[i];
+          const xCoord = timeScale.timeToCoordinate(snap.time);
 
-          // 차트 우측 현재가 영역에 북맵 매물대 띠 수직 밴드 렌더링
-          const visibleRange = timeScale.visibleLogicalRange();
-          if (!visibleRange) return;
+          if (xCoord !== null && xCoord >= -20 && xCoord <= canvas.width) {
+            // 매도 매물대 띠 (빨간색 계열 수평선)
+            snap.asks.forEach(([p, q]) => {
+              const yCoord = candleSeries.priceToCoordinate(p);
+              if (yCoord !== null) {
+                const alpha = Math.min(0.85, q / 2.0);
+                ctx.fillStyle = `rgba(242, 54, 69, ${alpha})`;
+                ctx.fillRect(xCoord - 3, yCoord - 1, 6, 3);
+              }
+            });
 
-          const barSpacing = scope.mediaSize.width / (visibleRange.to - visibleRange.from);
-          const targetX = scope.mediaSize.width - (barSpacing * 3); // 우측 캔들 부근
+            // 매수 매물대 띠 (초록색 계열 수평선)
+            snap.bids.forEach(([p, q]) => {
+              const yCoord = candleSeries.priceToCoordinate(p);
+              if (yCoord !== null) {
+                const alpha = Math.min(0.85, q / 2.0);
+                ctx.fillStyle = `rgba(8, 153, 129, ${alpha})`;
+                ctx.fillRect(xCoord - 3, yCoord - 1, 6, 3);
+              }
+            });
+          }
+        }
 
-          ctx.save();
+        // [시장가 체결 버블]
+        tradeList.forEach(t => {
+          const xCoord = timeScale.timeToCoordinate(t.time);
+          const yCoord = candleSeries.priceToCoordinate(t.price);
 
-          // 1. 매도 매물대 (Asks)
-          depth.asks.forEach(([p, q]) => {
-            const yCoord = candleSeries.priceToCoordinate(p);
-            if (yCoord !== null) {
-              const mappedY = yCoord * scope.verticalPixelRatio;
-              const alpha = Math.min(0.9, q / 2.0);
-              ctx.fillStyle = `rgba(242, 54, 69, ${alpha})`;
-              ctx.fillRect((targetX - 30) * scope.horizontalPixelRatio, mappedY - 2, 60 * scope.horizontalPixelRatio, 4 * scope.verticalPixelRatio);
-            }
-          });
-
-          // 2. 매수 매물대 (Bids)
-          depth.bids.forEach(([p, q]) => {
-            const yCoord = candleSeries.priceToCoordinate(p);
-            if (yCoord !== null) {
-              const mappedY = yCoord * scope.verticalPixelRatio;
-              const alpha = Math.min(0.9, q / 2.0);
-              ctx.fillStyle = `rgba(8, 153, 129, ${alpha})`;
-              ctx.fillRect((targetX - 30) * scope.horizontalPixelRatio, mappedY - 2, 60 * scope.horizontalPixelRatio, 4 * scope.verticalPixelRatio);
-            }
-          });
-
-          // 3. 체결 버블
-          trades.forEach(t => {
-            const xCoord = timeScale.timeToCoordinate(t.time);
-            const yCoord = candleSeries.priceToCoordinate(t.price);
-            if (xCoord !== null && yCoord !== null) {
-              const cx = xCoord * scope.horizontalPixelRatio;
-              const cy = yCoord * scope.verticalPixelRatio;
-              const r = Math.min(14, Math.max(3, Math.sqrt(t.qty) * 2.5)) * scope.horizontalPixelRatio;
-
-              ctx.beginPath();
-              ctx.arc(cx, cy, r, 0, Math.PI * 2);
-              ctx.fillStyle = t.isMaker ? 'rgba(242, 54, 69, 0.85)' : 'rgba(8, 153, 129, 0.85)';
-              ctx.fill();
-              ctx.strokeStyle = '#ffffff';
-              ctx.lineWidth = 1;
-              ctx.stroke();
-            }
-          });
-
-          ctx.restore();
+          if (xCoord !== null && yCoord !== null && xCoord >= 0 && xCoord <= canvas.width) {
+            const r = Math.min(12, Math.max(2, Math.sqrt(t.qty) * 2.2));
+            ctx.beginPath();
+            ctx.arc(xCoord, yCoord, r, 0, Math.PI * 2);
+            ctx.fillStyle = t.isMaker ? 'rgba(242, 54, 69, 0.85)' : 'rgba(8, 153, 129, 0.85)';
+            ctx.fill();
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 0.5;
+            ctx.stroke();
+          }
         });
       }
+
+      requestAnimationFrame(renderOverlay);
     }
 
-    class BookmapOverlayPaneView {
-      constructor(dataGetter, tradeGetter) {
-        this._renderer = new BookmapOverlayRenderer(dataGetter, tradeGetter);
-      }
-      update() {}
-      renderer() {
-        return this._renderer;
-      }
-    }
-
-    class BookmapOverlayPricePane {
-      constructor(dataGetter, tradeGetter) {
-        this._paneView = new BookmapOverlayPaneView(dataGetter, tradeGetter);
-      }
-      zorder() {
-        return 'top';
-      }
-      paneViews() {
-        return [this._paneView];
-      }
-    }
-
-    // 차트에 플러그인 등록
-    const overlayPlugin = new BookmapOverlayPaneView(() => latestDepth, () => tradeList);
-    candleSeries.attachPrimitive({
-      paneViews: () => [overlayPlugin]
-    });
-
-    // 렌더링 갱신 루프
-    function updateLoop() {
-      chart.timeScale().updateFormatter();
-      requestAnimationFrame(updateLoop);
-    }
-    updateLoop();
-
+    renderOverlay();
   </script>
 </body>
 </html>
