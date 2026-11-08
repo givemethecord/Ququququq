@@ -3,73 +3,144 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>BTCUSDT Full Overlay Bookmap</title>
+  <title>BTCUSDT Chart Overlay Bookmap</title>
   <style>
-    body { background-color: #0b0e14; color: #d1d4dc; font-family: sans-serif; margin: 0; padding: 10px; }
-    #status { padding: 6px; font-weight: bold; background: #1e222d; margin-bottom: 8px; border-radius: 4px; font-size: 12px; text-align: center; }
+    body { background-color: #0d1117; color: #c9d1d9; font-family: sans-serif; margin: 0; padding: 8px; }
+    #status { padding: 6px; font-weight: bold; background: #161b22; margin-bottom: 6px; border-radius: 4px; font-size: 12px; text-align: center; color: #58a6ff; }
     
-    .bookmap-container {
+    .timeframe-bar {
+      display: flex; gap: 6px; margin-bottom: 6px;
+    }
+    .tf-btn {
+      background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 4px 10px; font-size: 12px; border-radius: 4px; cursor: pointer;
+    }
+    .tf-btn.active { background: #238636; border-color: #2ea043; color: #fff; font-weight: bold; }
+
+    /* 차트 + 오버레이 캔버스 컨테이너 */
+    #chart-wrapper {
       position: relative;
       width: 100%;
-      height: 500px;
-      background: #05070a;
-      border: 1px solid #2a2e39;
-      border-radius: 4px;
+      height: 480px;
+      border: 1px solid #30363d;
+      border-radius: 6px;
       overflow: hidden;
+      background: #0d1117;
     }
-    
-    canvas {
+
+    #tv-chart {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      top: 0; left: 0;
+      z-index: 1;
+    }
+
+    /* 캔들 바로 뒤에 위치하는 북맵 히트맵 캔버스 */
+    #heatmap-canvas {
       position: absolute;
       top: 0; left: 0;
       width: 100%; height: 100%;
+      z-index: 2;
+      pointer-events: none; /* 클릭 이벤트 차트 통과 */
     }
 
     .legend {
-      display: flex; justify-content: space-between; font-size: 11px; padding: 6px 4px; color: #848e9c;
+      display: flex; justify-content: space-between; font-size: 11px; padding: 6px 4px; color: #8b949e;
     }
   </style>
+  <!-- Lightweight Charts 공식 라이브러리 -->
+  <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
 
-  <div id="status">⚡ 캔들 + 북맵 매물대 오버레이 엔진 로딩 중...</div>
+  <div id="status">⚡ 바이낸스 차트 & 오버레이 북맵 엔진 연결 중...</div>
 
-  <div class="bookmap-container">
-    <canvas id="bookmapCanvas"></canvas>
+  <div class="timeframe-bar">
+    <button class="tf-btn active" onclick="changeTimeframe('1m')">1분</button>
+    <button class="tf-btn" onclick="changeTimeframe('5m')">5분</button>
+    <button class="tf-btn" onclick="changeTimeframe('15m')">15분</button>
+    <button class="tf-btn" onclick="changeTimeframe('1h')">1시간</button>
+  </div>
+
+  <div id="chart-wrapper">
+    <div id="tv-chart"></div>
+    <canvas id="heatmap-canvas"></canvas>
   </div>
 
   <div class="legend">
-    <span>🟥 매도 지정가 띠 (Asks)</span>
-    <span>🕯️ 1분봉 캔들스틱 + 🟢/🔴 체결</span>
-    <span>🟩 매수 지정가 띠 (Bids)</span>
+    <span>🟥 매도 잔량 띠 (Asks)</span>
+    <span>🕯️ 실시간 캔들스틱 + 🟢/🔴 체결</span>
+    <span>🟩 매수 잔량 띠 (Bids)</span>
   </div>
 
   <script>
-    const canvas = document.getElementById('bookmapCanvas');
-    const ctx = canvas.getContext('2d');
     const statusEl = document.getElementById('status');
+    const wrapper = document.getElementById('chart-wrapper');
+    const canvas = document.getElementById('heatmap-canvas');
+    const ctx = canvas.getContext('2d');
+
+    // 1. Lightweight Chart 생성
+    const chart = LightweightCharts.createChart(document.getElementById('tv-chart'), {
+      layout: { backgroundColor: '#0d1117', textColor: '#c9d1d9' },
+      grid: { vertLines: { color: '#161b22' }, horzLines: { color: '#161b22' } },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+      priceScale: { borderColor: '#30363d' },
+      timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false }
+    });
+
+    const candleSeries = chart.addCandlestickSeries({
+      upColor: '#2ea043', downColor: '#f85149',
+      borderUpColor: '#2ea043', borderDownColor: '#f85149',
+      wickUpColor: '#2ea043', wickDownColor: '#f85149'
+    });
 
     function resizeCanvas() {
-      canvas.width = canvas.parentElement.clientWidth;
-      canvas.height = canvas.parentElement.clientHeight;
+      canvas.width = wrapper.clientWidth;
+      canvas.height = wrapper.clientHeight;
+      chart.applyOptions({ width: wrapper.clientWidth, height: wrapper.clientHeight });
     }
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
 
-    let currentPrice = 0;
+    let currentTF = '1m';
     let history = [];
     let trades = [];
-    let klineData = []; // 1분봉 Data
-    let currentCandle = null;
-    const maxHistory = 180;
+    let currentPrice = 0;
+    const maxHistory = 160;
 
-    // 1. 바이낸스 웹소켓 (뎁스, 체결, 1분 kline)
+    // 초기 캔들 데이터 불러오기 (바이낸스 REST API)
+    async function loadKlines(tf) {
+      try {
+        const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=${tf}&limit=100`);
+        const data = await res.json();
+        const formatted = data.map(d => ({
+          time: d[0] / 1000,
+          open: parseFloat(d[1]),
+          high: parseFloat(d[2]),
+          low: parseFloat(d[3]),
+          close: parseFloat(d[4])
+        }));
+        candleSeries.setData(formatted);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    loadKlines(currentTF);
+
+    function changeTimeframe(tf) {
+      currentTF = tf;
+      document.querySelectorAll('.tf-btn').forEach(btn => btn.classList.remove('active'));
+      event.target.classList.add('active');
+      loadKlines(tf);
+    }
+
+    // 2. 바이낸스 웹소켓 (실시간 호가 뎁스 + 체결 데이터)
     const wsDepth = new WebSocket('wss://fstream.binance.com/ws/btcusdt@depth10@100ms');
     const wsTrade = new WebSocket('wss://fstream.binance.com/ws/btcusdt@aggTrade');
-    const wsKline = new WebSocket('wss://fstream.binance.com/ws/btcusdt@kline_1m');
 
     wsDepth.onopen = () => {
-      statusEl.innerText = "⚡ 캔들 탑재 북맵 히트맵 오버레이 작동 중";
-      statusEl.style.color = "#089981";
+      statusEl.innerText = "⚡ 실시간 캔들 & 북맵 오버레이 작동 완료";
+      statusEl.style.color = "#3fb950";
     };
 
     wsDepth.onmessage = (e) => {
@@ -86,117 +157,68 @@
 
     wsTrade.onmessage = (e) => {
       const data = JSON.parse(e.data);
+      const price = parseFloat(data.p);
       trades.push({
-        price: parseFloat(data.p),
+        price: price,
         qty: parseFloat(data.q),
         isMaker: data.m,
-        x: canvas.width - 60
+        time: Date.now()
       });
       if (trades.length > 40) trades.shift();
+
+      // 현재 캔들 실시간 갱신
+      candleSeries.update({
+        time: Math.floor(Date.now() / 1000),
+        close: price
+      });
     };
 
-    wsKline.onmessage = (e) => {
-      const data = JSON.parse(e.data);
-      const k = data.k;
-      currentCandle = {
-        open: parseFloat(k.o),
-        high: parseFloat(k.h),
-        low: parseFloat(k.l),
-        close: parseFloat(k.c)
-      };
-    };
+    // 3. 차트 Y축 좌표계 기반 북맵 띠 렌더링 루프
+    function drawOverlay() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    function draw() {
-      ctx.fillStyle = '#05070a';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      if (currentPrice > 0 && history.length > 0) {
-        const range = 100; // 상하 $100 가격폭
-        const minP = currentPrice - range / 2;
-        const maxP = currentPrice + range / 2;
-
-        const getY = (p) => canvas.height - ((p - minP) / (maxP - minP)) * canvas.height;
+      if (history.length > 0) {
         const colWidth = (canvas.width - 60) / maxHistory;
 
-        // LAYER 1: 배경 매물대 히트맵 띠 (캔들 바로 뒤에 깔림)
         for (let i = 0; i < history.length; i++) {
           const snap = history[i];
           const x = i * colWidth;
 
+          // 차트의 가격(Price)을 캔버스 Y좌표로 변환
           snap.asks.forEach(([p, q]) => {
-            const y = getY(p);
-            ctx.fillStyle = `rgba(242, 54, 69, ${Math.min(0.75, q / 2.5)})`;
-            ctx.fillRect(x, y, colWidth + 1, 4);
+            const y = candleSeries.priceToCoordinate(p);
+            if (y !== null) {
+              ctx.fillStyle = `rgba(248, 81, 73, ${Math.min(0.65, q / 3)})`;
+              ctx.fillRect(x, y - 2, colWidth + 1, 4);
+            }
           });
 
           snap.bids.forEach(([p, q]) => {
-            const y = getY(p);
-            ctx.fillStyle = `rgba(8, 153, 129, ${Math.min(0.75, q / 2.5)})`;
-            ctx.fillRect(x, y, colWidth + 1, 4);
+            const y = candleSeries.priceToCoordinate(p);
+            if (y !== null) {
+              ctx.fillStyle = `rgba(46, 160, 67, ${Math.min(0.65, q / 3)})`;
+              ctx.fillRect(x, y - 2, colWidth + 1, 4);
+            }
           });
         }
 
-        // LAYER 2: 1분봉 캔들스틱 (매물대 띠 위에 겹쳐서 오버레이)
-        if (currentCandle) {
-          const candleX = canvas.width - 90;
-          const openY = getY(currentCandle.open);
-          const closeY = getY(currentCandle.close);
-          const highY = getY(currentCandle.high);
-          const lowY = getY(currentCandle.low);
-          const isUp = currentCandle.close >= currentCandle.open;
-          const color = isUp ? '#089981' : '#f23645';
-
-          // 윗꼬리 / 아랫꼬리
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 1.5;
-          ctx.beginPath();
-          ctx.moveTo(candleX, highY);
-          ctx.lineTo(candleX, lowY);
-          ctx.stroke();
-
-          // 캔들 몸통
-          ctx.fillStyle = color;
-          const bodyY = Math.min(openY, closeY);
-          const bodyH = Math.max(2, Math.abs(closeY - openY));
-          ctx.fillRect(candleX - 6, bodyY, 12, bodyH);
-        }
-
-        // LAYER 3: 현재가 실시간 점선
-        const currentY = getY(currentPrice);
-        ctx.strokeStyle = '#2962ff';
-        ctx.lineWidth = 1;
-        ctx.setLineDash([3, 3]);
-        ctx.beginPath();
-        ctx.moveTo(0, currentY);
-        ctx.lineTo(canvas.width - 60, currentY);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // LAYER 4: 시장가 체결 버블
+        // 체결 버블 렌더링
         trades.forEach(t => {
-          const y = getY(t.price);
-          const r = Math.min(14, Math.max(3, Math.sqrt(t.qty) * 3));
-          ctx.beginPath();
-          ctx.arc(t.x, y, r, 0, Math.PI * 2);
-          ctx.fillStyle = t.isMaker ? 'rgba(242, 54, 69, 0.85)' : 'rgba(8, 153, 129, 0.85)';
-          ctx.fill();
-          ctx.strokeStyle = '#fff';
-          ctx.lineWidth = 0.5;
-          ctx.stroke();
+          const y = candleSeries.priceToCoordinate(t.price);
+          if (y !== null) {
+            const r = Math.min(12, Math.max(2, Math.sqrt(t.qty) * 2.5));
+            ctx.beginPath();
+            ctx.arc(canvas.width - 70, y, r, 0, Math.PI * 2);
+            ctx.fillStyle = t.isMaker ? 'rgba(248, 81, 73, 0.8)' : 'rgba(46, 160, 67, 0.8)';
+            ctx.fill();
+          }
         });
-
-        // LAYER 5: 우측 가격 라벨
-        ctx.fillStyle = '#1e222d';
-        ctx.fillRect(canvas.width - 60, 0, 60, canvas.height);
-        ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 11px monospace';
-        ctx.fillText(currentPrice.toFixed(1), canvas.width - 56, currentY + 4);
       }
 
-      requestAnimationFrame(draw);
+      requestAnimationFrame(drawOverlay);
     }
 
-    draw();
+    drawOverlay();
   </script>
 </body>
 </html>
