@@ -3,316 +3,221 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>BTCUSDT Pro Custom Bookmap Engine</title>
+  <title>Pro-Grade Web Bookmap Engine</title>
   <style>
-    body { background-color: #0b0e14; color: #d1d4dc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 10px; overflow: hidden; }
-    #header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-    #status { font-weight: bold; font-size: 13px; color: #089981; }
-    
-    .timeframe-bar {
-      display: flex; gap: 6px;
-    }
-    .tf-btn {
-      background: #1e222d; border: 1px solid #2a2e39; color: #d1d4dc; padding: 4px 12px; font-size: 12px; border-radius: 4px; cursor: pointer; transition: 0.2s;
-    }
-    .tf-btn:hover { background: #2a2e39; }
-    .tf-btn.active { background: #089981; border-color: #089981; color: #fff; font-weight: bold; }
-
-    .canvas-container {
-      position: relative;
-      width: 100vw;
-      height: calc(100vh - 90px);
-      background: #131722;
-      border: 1px solid #2a2e39;
-      border-radius: 6px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-    }
-    
-    canvas {
-      display: block;
-      width: 100%;
-      height: 100%;
-    }
-
-    .legend {
-      position: absolute; bottom: 10px; left: 10px; display: flex; gap: 15px; font-size: 11px; background: rgba(19, 23, 34, 0.85); padding: 6px 10px; border-radius: 4px; border: 1px solid #2a2e39; pointer-events: none;
-    }
-    .legend span { display: flex; align-items: center; gap: 4px; }
+    body { background-color: #080a0f; color: #d1d4dc; font-family: monospace; margin: 0; padding: 0; overflow: hidden; }
+    #toolbar { display: flex; justify-content: space-between; align-items: center; padding: 6px 12px; background: #121622; border-bottom: 1px solid #1e2638; font-size: 12px; }
+    #metrics { color: #00ffcc; font-weight: bold; }
+    .canvas-container { position: relative; width: 100vw; height: calc(100vh - 35px); }
+    canvas { display: block; width: 100%; height: 100%; }
   </style>
 </head>
 <body>
 
-  <div id="header">
-    <div id="status">⚡ 실시간 바이낸스 데이터 스트리밍 연결 중...</div>
-    <div class="timeframe-bar">
-      <button class="tf-btn active" onclick="changeTimeframe('1m', event)">1분</button>
-      <button class="tf-btn" onclick="changeTimeframe('5m', event)">5분</button>
-      <button class="tf-btn" onclick="changeTimeframe('15m', event)">15분</button>
-      <button class="tf-btn" onclick="changeTimeframe('1h', event)">1시간</button>
-    </div>
+  <div id="toolbar">
+    <div>⚡ BTCUSDT L2/L3 Simulation Engine <span id="metrics">[FPS: 60 | Queue: 0]</span></div>
+    <div>Time-Price Grid Heatmap Active</div>
   </div>
 
   <div class="canvas-container">
     <canvas id="bookmapCanvas"></canvas>
-    <div class="legend">
-      <span><span style="color:#f23645">■</span> 매도 호가벽 (Asks)</span>
-      <span><span style="color:#089981">■</span> 매수 호가벽 (Bids)</span>
-      <span>⚪ 체결 버블 (Trades)</span>
-    </div>
   </div>
 
   <script>
     const canvas = document.getElementById('bookmapCanvas');
-    const ctx = canvas.getContext('2d');
-    const statusEl = document.getElementById('status');
+    const ctx = canvas.getContext('2d', { alpha: false }); // 알파 채널 제거로 렌더링 성능 극대화
+    const metricsEl = document.getElementById('metrics');
 
-    function resizeCanvas() {
-      const rect = canvas.parentElement.getBoundingClientRect();
-      canvas.width = rect.width;
-      canvas.height = rect.height;
+    function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight - 35;
     }
-    resizeCanvas();
-    window.addEventListener('resize', resizeCanvas);
+    window.addEventListener('resize', resize);
+    resize();
 
-    let currentTF = '1m';
-    let candles = [];
-    let orderbookRail = []; 
-    let tradeList = [];
+    // 엔진 데이터 구조
+    const maxColumns = 300; // 시간축 레일 폭
+    let orderbookRail = [];  // 오더북 히트맵 링 버퍼
+    let candles = [];        // 캔들 데이터
+    let trades = [];         // 체결 틱 버블 데이터
     let currentPrice = 0;
-    let latestDepth = { bids: [], asks: [] };
-    const maxColumns = 220; // 시간축 레일 컬럼 수
+    let minPrice = Infinity, maxPrice = -Infinity;
 
-    // 1. 바이낸스 캔들(Klines) 데이터 로드
-    async function loadKlines(tf) {
-      try {
-        const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=${tf}&limit=120`);
-        const data = await res.json();
-        candles = data.map(d => ({
-          time: d[0],
-          open: parseFloat(d[1]),
-          high: parseFloat(d[2]),
-          low: parseFloat(d[3]),
-          close: parseFloat(d[4])
-        }));
-      } catch (e) {
-        console.error("캔들 로딩 실패:", e);
-      }
-    }
-    loadKlines(currentTF);
-
-    function changeTimeframe(tf, e) {
-      currentTF = tf;
-      document.querySelectorAll('.tf-btn').forEach(btn => btn.classList.remove('active'));
-      e.target.classList.add('active');
-      loadKlines(tf);
-    }
-
-    // 2. 바이낸스 웹소켓 연결 (오더북 뎁스 + 체결 틱)
+    // 바이낸스 웹소켓 연결 (Depth & Trades)
     const wsDepth = new WebSocket('wss://fstream.binance.com/ws/btcusdt@depth20@100ms');
     const wsTrade = new WebSocket('wss://fstream.binance.com/ws/btcusdt@aggTrade');
 
-    wsDepth.onopen = () => {
-      statusEl.innerText = "⚡ BTCUSDT 선물 엔진 정상 작동 중";
+    let latestDepth = { bids: [], asks: [] };
+
+    wsDepth.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      if (!data.b || !data.a) return;
+      latestDepth = {
+        bids: data.b.map(x => [parseFloat(x[0]), parseFloat(x[1])]),
+        asks: data.a.map(x => [parseFloat(x[0]), parseFloat(x[1])])
+      };
+      const topBid = latestDepth.bids[0][0];
+      const topAsk = latestDepth.asks[0][0];
+      currentPrice = (topBid + topAsk) / 2;
     };
 
-    wsDepth.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (!data.b || !data.a) return;
-
-        latestDepth = {
-          time: Date.now(),
-          bids: data.b.map(b => [parseFloat(b[0]), parseFloat(b[1])]),
-          asks: data.a.map(a => [parseFloat(a[0]), parseFloat(a[1])])
-        };
-        currentPrice = (latestDepth.bids[0][0] + latestDepth.asks[0][0]) / 2;
-      } catch (err) {
-        console.error(err);
-      }
+    wsTrade.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      trades.push({
+        price: parseFloat(data.p),
+        qty: parseFloat(data.q),
+        isMaker: data.m,
+        time: Date.now()
+      });
+      if (trades.length > 200) trades.shift();
     };
 
-    wsTrade.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        const price = parseFloat(data.p);
-        const qty = parseFloat(data.q);
-        const isMaker = data.m; // true면 매도자 주도(매도), false면 매수자 주도(매수)
-        const now = Date.now();
+    // 초기 캔들 로드
+    async function initKlines() {
+      const res = await fetch('https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1m&limit=100');
+      const data = await res.json();
+      candles = data.map(d => ({
+        time: d[0], open: +d[1], high: +d[2], low: +d[3], close: +d[4]
+      }));
+    }
+    initKlines();
 
-        tradeList.push({ price, qty, isMaker, time: now });
-        if (tradeList.length > 120) tradeList.shift();
-
-        // 마지막 캔들 실시간 갱신
-        if (candles.length > 0) {
-          const lastCandle = candles[candles.length - 1];
-          lastCandle.close = price;
-          if (price > lastCandle.high) lastCandle.high = price;
-          if (price < lastCandle.low) lastCandle.low = price;
-        }
-      } catch (err) {
-        console.error(err);
-      }
-    };
-
-    // 0.1초마다 오더북 스냅샷을 히트맵 레일에 적재 (FIFO)
+    // 100ms 주기로 오더북 스냅샷을 타임스탬프 레일에 적재 (북맵 히트맵의 핵심 원리)
     setInterval(() => {
       if (latestDepth.bids.length > 0) {
-        orderbookRail.push(JSON.parse(JSON.stringify(latestDepth)));
-        if (orderbookRail.length > maxColumns) {
-          orderbookRail.shift();
-        }
+        orderbookRail.push({
+          time: Date.now(),
+          bids: [...latestDepth.bids],
+          asks: [...latestDepth.asks]
+        });
+        if (orderbookRail.length > maxColumns) orderbookRail.shift();
       }
     }, 100);
 
-    // 3. 메인 렌더링 루프 (Canvas 2D Pipeline)
-    function render() {
-      ctx.fillStyle = '#131722';
+    // 고성능 렌더링 루프 (60 FPS Target)
+    let lastTime = performance.now();
+    let frameCount = 0;
+    let fps = 60;
+
+    function render(now) {
+      frameCount++;
+      if (now - lastTime >= 1000) {
+        fps = frameCount;
+        frameCount = 0;
+        lastTime = now;
+        metricsEl.innerText = `[FPS: ${fps} | Buffer: ${orderbookRail.length}]`;
+      }
+
+      // 1. 화면 클리어 (다크 테마)
+      ctx.fillStyle = '#0b0e14';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       if (candles.length > 0 && currentPrice > 0) {
-        const rightSpace = 90; // 우측 가격 패널 폭
-        const chartWidth = canvas.width - rightSpace;
-        const chartHeight = canvas.height;
+        const rightPadding = 80;
+        const width = canvas.width - rightPadding;
+        const height = canvas.height;
 
-        // 가격 범위 산출
-        let minPrice = Infinity;
-        let maxPrice = -Infinity;
-
+        // 가격 범위 계산
+        minPrice = Infinity; maxPrice = -Infinity;
         candles.forEach(c => {
           if (c.low < minPrice) minPrice = c.low;
           if (c.high > maxPrice) maxPrice = c.high;
         });
-
-        const span = Math.max(maxPrice - minPrice, 400);
+        const span = Math.max(maxPrice - minPrice, 300);
         const center = (maxPrice + minPrice) / 2;
-        minPrice = center - span / 1.15;
-        maxPrice = center + span / 1.15;
+        minPrice = center - span / 1.1;
+        maxPrice = center + span / 1.1;
 
-        // 가격 -> Y좌표 변환 함수
-        const getY = (p) => chartHeight - ((p - minPrice) / (maxPrice - minPrice)) * chartHeight;
+        const getY = p => height - ((p - minPrice) / (maxPrice - minPrice)) * height;
+        const colWidth = width / maxColumns;
 
-        // 배경 그리드 라인
-        ctx.strokeStyle = '#1f293d';
-        ctx.lineWidth = 1;
-        for (let i = 1; i <= 6; i++) {
-          const y = (chartHeight / 7) * i;
-          ctx.beginPath();
-          ctx.moveTo(0, y);
-          ctx.lineTo(chartWidth, y);
-          ctx.stroke();
-        }
-
-        // [LAYER 1] 백그라운드 오더북 히트맵 띠 (시간 축을 따라 흐르는 레일)
-        while (orderbookRail.length < maxColumns) {
-          orderbookRail.unshift(latestDepth);
-        }
-        const colWidth = chartWidth / maxColumns;
-
+        // [LAYER 1] 배경 오더북 히트맵 렌더링 (시간-가격 레일)
         for (let i = 0; i < orderbookRail.length; i++) {
           const snap = orderbookRail[i];
           const x = i * colWidth;
 
-          if (snap.asks) {
-            snap.asks.forEach(([p, q]) => {
-              const y = getY(p);
-              if (y >= 0 && y <= chartHeight) {
-                const alpha = Math.min(0.5, q / 3.5); // 물량 많을수록 진해짐
-                ctx.fillStyle = `rgba(242, 54, 69, ${alpha})`;
-                ctx.fillRect(x, y - 1, colWidth + 1, 3);
-              }
-            });
-          }
+          // Asks (매도 호가벽 - 붉은 계열)
+          snap.asks.forEach(([p, q]) => {
+            const y = getY(p);
+            if (y >= 0 && y <= height) {
+              const alpha = Math.min(0.6, q / 4.0);
+              ctx.fillStyle = `rgba(242, 54, 69, ${alpha})`;
+              ctx.fillRect(x, y - 1, colWidth + 0.5, 2.5);
+            }
+          });
 
-          if (snap.bids) {
-            snap.bids.forEach(([p, q]) => {
-              const y = getY(p);
-              if (y >= 0 && y <= chartHeight) {
-                const alpha = Math.min(0.5, q / 3.5);
-                ctx.fillStyle = `rgba(8, 153, 129, ${alpha})`;
-                ctx.fillRect(x, y - 1, colWidth + 1, 3);
-              }
-            });
-          }
+          // Bids (매수 호가벽 - 초록 계열)
+          snap.bids.forEach(([p, q]) => {
+            const y = getY(p);
+            if (y >= 0 && y <= height) {
+              const alpha = Math.min(0.6, q / 4.0);
+              ctx.fillStyle = `rgba(8, 153, 129, ${alpha})`;
+              ctx.fillRect(x, y - 1, colWidth + 0.5, 2.5);
+            }
+          });
         }
 
-        // [LAYER 2] 메인 캔들스틱 렌더링
-        const candleWidth = Math.max(3, chartWidth / candles.length - 2.5);
-        candles.forEach((c, index) => {
-          const cx = (index / candles.length) * chartWidth + candleWidth / 2;
+        // [LAYER 2] 캔들스틱 렌더링
+        const candleW = Math.max(2, width / candles.length - 2);
+        candles.forEach((c, idx) => {
+          const cx = (idx / candles.length) * width + candleW / 2;
           const isUp = c.close >= c.open;
-          const color = isUp ? '#089981' : '#f23645';
-
-          // 심지
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 1.2;
+          ctx.strokeStyle = isUp ? '#089981' : '#f23645';
+          ctx.lineWidth = 1;
+          
+          // 위/아래 심지
           ctx.beginPath();
           ctx.moveTo(cx, getY(c.high));
           ctx.lineTo(cx, getY(c.low));
           ctx.stroke();
 
           // 몸통
-          const bodyY = getY(Math.max(c.open, c.close));
-          const bodyH = Math.max(1.5, Math.abs(getY(c.open) - getY(c.close)));
-          ctx.fillStyle = color;
-          ctx.fillRect(cx - candleWidth / 2, bodyY, candleWidth, bodyH);
+          const by = getY(Math.max(c.open, c.close));
+          const bh = Math.max(1, Math.abs(getY(c.open) - getY(c.close)));
+          ctx.fillStyle = isUp ? '#089981' : '#f23645';
+          ctx.fillRect(cx - candleW / 2, by, candleW, bh);
         });
 
-        // [LAYER 3] 실시간 체결 버블 (거래량 비례 크기)
-        const now = Date.now();
-        tradeList.forEach(t => {
-          if (now - t.time < 5000) {
-            const bx = chartWidth - 60; // 우측 영역 근처에 배치
+        // [LAYER 3] 실시간 체결 버블 렌더링
+        const currentTime = Date.now();
+        trades.forEach(t => {
+          const age = currentTime - t.time;
+          if (age < 4000) { // 4초 동안 잔상 유지 후 소멸
+            const bx = width - 40;
             const by = getY(t.price);
-            if (by >= 0 && by <= chartHeight) {
-              const r = Math.min(14, Math.max(2.5, Math.sqrt(t.qty) * 2.2));
+            if (by >= 0 && by <= height) {
+              const radius = Math.min(12, Math.max(2, Math.sqrt(t.qty) * 2));
               ctx.beginPath();
-              ctx.arc(bx, by, r, 0, Math.PI * 2);
-              ctx.fillStyle = t.isMaker ? 'rgba(242, 54, 69, 0.85)' : 'rgba(8, 153, 129, 0.85)';
+              ctx.arc(bx, by, radius, 0, Math.PI * 2);
+              ctx.fillStyle = t.isMaker ? 'rgba(242, 54, 69, 0.7)' : 'rgba(8, 153, 129, 0.7)';
               ctx.fill();
-              ctx.strokeStyle = '#ffffff';
-              ctx.lineWidth = 0.6;
-              ctx.stroke();
             }
           }
         });
 
-        // [LAYER 4] 우측 가격 패널 & 현재가 실시간 라인
-        ctx.fillStyle = '#1e222d';
-        ctx.fillRect(chartWidth, 0, rightSpace, chartHeight);
-
-        // 패널 경계선
-        ctx.strokeStyle = '#2a2e39';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(chartWidth, 0);
-        ctx.lineTo(chartWidth, chartHeight);
-        ctx.stroke();
+        // [LAYER 4] 우측 가격 패널 & 현재가 라인
+        ctx.fillStyle = '#121622';
+        ctx.fillRect(width, 0, rightPadding, height);
 
         const curY = getY(currentPrice);
-        if (curY >= 0 && curY <= chartHeight) {
-          // 현재가 수평선
-          ctx.strokeStyle = '#2962ff';
-          ctx.lineWidth = 1;
-          ctx.setLineDash([3, 3]);
-          ctx.beginPath();
-          ctx.moveTo(0, curY);
-          ctx.lineTo(chartWidth, curY);
-          ctx.stroke();
-          ctx.setLineDash([]);
+        ctx.strokeStyle = '#2962ff';
+        ctx.setLineDash([2, 2]);
+        ctx.beginPath();
+        ctx.moveTo(0, curY);
+        ctx.lineTo(width, curY);
+        ctx.stroke();
+        ctx.setLineDash([]);
 
-          // 우측 가격 뱃지
-          ctx.fillStyle = '#2962ff';
-          ctx.fillRect(chartWidth, curY - 10, rightSpace, 20);
-          ctx.fillStyle = '#ffffff';
-          ctx.font = 'bold 11px -apple-system, sans-serif';
-          ctx.fillText(currentPrice.toFixed(1), chartWidth + 10, curY + 4);
-        }
+        ctx.fillStyle = '#2962ff';
+        ctx.fillRect(width, curY - 9, rightPadding, 18);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '11px monospace';
+        ctx.fillText(currentPrice.toFixed(1), width + 6, curY + 4);
       }
 
       requestAnimationFrame(render);
     }
 
-    // 렌더링 루프 시작
     requestAnimationFrame(render);
   </script>
 </body>
