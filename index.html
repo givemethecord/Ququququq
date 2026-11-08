@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Real Bookmap Heatmap</title>
+  <title>BTCUSDT Bookmap Heatmap</title>
   <style>
     body { background-color: #0b0e14; color: #d1d4dc; font-family: sans-serif; margin: 0; padding: 10px; }
-    #status { padding: 6px; font-weight: bold; background: #1e222d; margin-bottom: 8px; border-radius: 4px; font-size: 12px; text-align: center; color: #089981; }
+    #status { padding: 8px; font-weight: bold; background: #1e222d; margin-bottom: 8px; border-radius: 4px; font-size: 12px; text-align: center; color: #089981; }
     
     .bookmap-container {
       position: relative;
       width: 100%;
-      height: 500px;
+      height: 480px;
       background: #05070a;
       border: 1px solid #2a2e39;
       border-radius: 4px;
@@ -31,16 +31,16 @@
 </head>
 <body>
 
-  <div id="status">⚡ 오리지널 북맵 히트맵 엔진 연결 중...</div>
+  <div id="status">⚡ 바이낸스 북맵 연결 시도 중...</div>
 
   <div class="bookmap-container">
     <canvas id="bookmapCanvas"></canvas>
   </div>
 
   <div class="legend">
-    <span>🟥 매도 물량 띠 (Asks Heatmap)</span>
-    <span>🟢/🔴 시장가 체결 버블 (Trades)</span>
-    <span>🟩 매수 물량 띠 (Bids Heatmap)</span>
+    <span>🟥 매도 띠 (Asks)</span>
+    <span>🟢/🔴 체결 버블 (Trades)</span>
+    <span>🟩 매수 띠 (Bids)</span>
   </div>
 
   <script>
@@ -49,126 +49,137 @@
     const statusEl = document.getElementById('status');
 
     function resizeCanvas() {
-      canvas.width = canvas.parentElement.clientWidth;
-      canvas.height = canvas.parentElement.clientHeight;
+      canvas.width = canvas.parentElement.clientWidth || window.innerWidth - 20;
+      canvas.height = canvas.parentElement.clientHeight || 480;
     }
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
 
     let currentPrice = 0;
-    let history = []; // 시간별 호가 스냅샷 누적 배열 (북맵 레일)
-    let trades = [];
-    const maxColumns = 250; // 화면에 흘러갈 수평 타임라인 칸 수
+    let historyData = [];
+    let tradeList = [];
+    const maxColumns = 200;
 
-    const wsDepth = new WebSocket('wss://fstream.binance.com/ws/btcusdt@depth20@100ms');
-    const wsTrade = new WebSocket('wss://fstream.binance.com/ws/btcusdt@aggTrade');
+    // 안전한 웹소켓 연결 (바이낸스 공식 스트림)
+    const ws = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@depth20@100ms');
+    const wsT = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@aggTrade');
 
-    wsDepth.onopen = () => {
-      statusEl.innerText = "⚡ 오리지널 북맵 히트맵 스트리밍 작동 중";
+    ws.onopen = () => {
+      statusEl.innerText = "⚡ 바이낸스 오더북 수신 중...";
     };
 
-    wsDepth.onmessage = (e) => {
-      const data = JSON.parse(e.data);
-      if (!data.bids || !data.asks) return;
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (!data.bids || !data.asks) return;
 
-      const bids = data.bids.map(b => [parseFloat(b[0]), parseFloat(b[1])]);
-      const asks = data.asks.map(a => [parseFloat(a[0]), parseFloat(a[1])]);
-      currentPrice = (bids[0][0] + asks[0][0]) / 2;
+        const bids = data.bids.map(b => [parseFloat(b[0]), parseFloat(b[1])]);
+        const asks = data.asks.map(a => [parseFloat(a[0]), parseFloat(a[1])]);
+        
+        currentPrice = (bids[0][0] + asks[0][0]) / 2;
 
-      // 새로운 오더북 스냅샷을 시간 순서대로 우측에 추가 (북맵 수평 띠 레일 형성)
-      history.push({ price: currentPrice, bids, asks });
-      if (history.length > maxColumns) history.shift();
+        historyData.push({ bids, asks });
+        if (historyData.length > maxColumns) {
+          historyData.shift();
+        }
 
-      statusEl.innerText = `⚡ BTC 실시간 가격: ${currentPrice.toFixed(2)} USD`;
+        statusEl.innerText = `⚡ BTC 실시간 가격: $${currentPrice.toFixed(2)}`;
+      } catch (err) {
+        console.error(err);
+      }
     };
 
-    wsTrade.onmessage = (e) => {
-      const data = JSON.parse(e.data);
-      trades.push({
-        price: parseFloat(data.p),
-        qty: parseFloat(data.q),
-        isMaker: data.m,
-        xPosMultiplier: 1.0 // 생성 시점의 X축 위치 비율
-      });
-      if (trades.length > 60) trades.shift();
+    wsT.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        tradeList.push({
+          price: parseFloat(data.p),
+          qty: parseFloat(data.q),
+          isMaker: data.m
+        });
+        if (tradeList.length > 50) tradeList.shift();
+      } catch (err) {
+        console.error(err);
+      }
     };
 
-    function draw() {
-      // 잔상 효과를 주어 부드럽게 흘러가도록 배경 처리
+    ws.onerror = () => { statusEl.innerText = "❌ 웹소켓 연결 에러 발생"; };
+    ws.onclose = () => { statusEl.innerText = "⚠️ 웹소켓 연결 종료됨"; };
+
+    function render() {
+      // 캔버스 배경 클리어
       ctx.fillStyle = '#05070a';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      if (currentPrice > 0 && history.length > 0) {
-        const range = 80; // 상하 $80 가격 폭으로 집중 확대
+      if (currentPrice > 0 && historyData.length > 0) {
+        const range = 50; // 상하 $50 폭
         const minP = currentPrice - range / 2;
         const maxP = currentPrice + range / 2;
 
         const getY = (p) => canvas.height - ((p - minP) / (maxP - minP)) * canvas.height;
-        const rightMargin = 70;
-        const chartWidth = canvas.width - rightMargin;
-        const colWidth = chartWidth / maxColumns;
+        const rightSpace = 60;
+        const chartW = canvas.width - rightSpace;
+        const colW = chartW / maxColumns;
 
-        // 1. [오리지널 북맵 히트맵 띠] 과거부터 현재까지 좌에서 우로 수평 띠 레일 렌더링
-        for (let i = 0; i < history.length; i++) {
-          const snap = history[i];
-          const x = i * colWidth;
+        // 1. 히트맵 띠 렌더링
+        for (let i = 0; i < historyData.length; i++) {
+          const snap = historyData[i];
+          const x = i * colW;
 
-          // 매도 호가 띠 (빨간색 계열 - 물량 많을수록 진하게)
-          snap.asks.forEach(([p, q]) => {
-            const y = getY(p);
-            const intensity = Math.min(0.9, q / 2.0);
-            ctx.fillStyle = `rgba(242, 54, 69, ${intensity})`;
-            ctx.fillRect(x, y - 1, colWidth + 0.5, 3);
-          });
+          if (snap.asks) {
+            snap.asks.forEach(([p, q]) => {
+              const y = getY(p);
+              const alpha = Math.min(0.85, q / 1.5);
+              ctx.fillStyle = `rgba(242, 54, 69, ${alpha})`;
+              ctx.fillRect(x, y - 1, colW + 0.5, 3);
+            });
+          }
 
-          // 매수 호가 띠 (초록색 계열 - 물량 많을수록 진하게)
-          snap.bids.forEach(([p, q]) => {
-            const y = getY(p);
-            const intensity = Math.min(0.9, q / 2.0);
-            ctx.fillStyle = `rgba(8, 153, 129, ${intensity})`;
-            ctx.fillRect(x, y - 1, colWidth + 0.5, 3);
-          });
+          if (snap.bids) {
+            snap.bids.forEach(([p, q]) => {
+              const y = getY(p);
+              const alpha = Math.min(0.85, q / 1.5);
+              ctx.fillStyle = `rgba(8, 153, 129, ${alpha})`;
+              ctx.fillRect(x, y - 1, colW + 0.5, 3);
+            });
+          }
         }
 
-        // 2. 현재가 기준 수평 실시간 점선
-        const currentY = getY(currentPrice);
+        // 2. 현재가 기준선
+        const curY = getY(currentPrice);
         ctx.strokeStyle = '#2962ff';
         ctx.lineWidth = 1;
-        ctx.setLineDash([4, 4]);
+        ctx.setLineDash([3, 3]);
         ctx.beginPath();
-        ctx.moveTo(0, currentY);
-        ctx.lineTo(chartWidth, currentY);
+        ctx.moveTo(0, curY);
+        ctx.lineTo(chartW, curY);
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // 3. [시장가 체결 버블] 띠 위로 터지는 체결 방울
-        const bubbleX = chartWidth - 30;
-        trades.forEach((t, idx) => {
+        // 3. 체결 버블 렌더링
+        const bubbleX = chartW - 25;
+        tradeList.forEach(t => {
           const y = getY(t.price);
-          const radius = Math.min(14, Math.max(2, Math.sqrt(t.qty) * 2.8));
-          
+          const r = Math.min(12, Math.max(2, Math.sqrt(t.qty) * 2.5));
           ctx.beginPath();
-          ctx.arc(bubbleX, y, radius, 0, Math.PI * 2);
+          ctx.arc(bubbleX, y, r, 0, Math.PI * 2);
           ctx.fillStyle = t.isMaker ? 'rgba(242, 54, 69, 0.85)' : 'rgba(8, 153, 129, 0.85)';
           ctx.fill();
-          ctx.strokeStyle = '#ffffff';
-          ctx.lineWidth = 0.5;
-          ctx.stroke();
         });
 
-        // 4. 우측 가격 스케일 패널
+        // 4. 우측 가격 스케일 박스
         ctx.fillStyle = '#1e222d';
-        ctx.fillRect(chartWidth, 0, rightMargin, canvas.height);
+        ctx.fillRect(chartW, 0, rightSpace, canvas.height);
         
         ctx.fillStyle = '#ffffff';
         ctx.font = 'bold 11px monospace';
-        ctx.fillText(currentPrice.toFixed(1), chartWidth + 8, currentY + 4);
+        ctx.fillText(currentPrice.toFixed(1), chartW + 6, curY + 4);
       }
 
-      requestAnimationFrame(draw);
+      requestAnimationFrame(render);
     }
 
-    draw();
+    render();
   </script>
 </body>
 </html>
