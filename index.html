@@ -1,1 +1,96 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>실시간 호가 수치 차트</title>
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        body { background-color: #121212; color: #ffffff; margin: 0; font-family: sans-serif; }
+        #header { padding: 10px; background: #1e1e1e; font-weight: bold; color: #00ffcc; font-size: 14px; }
+        #chart-container { position: relative; width: 100vw; height: calc(100vh - 40px); }
+        #number-overlay {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            pointer-events: none;
+            font-family: monospace;
+            font-size: 12px;
+            line-height: 1.5;
+            background: rgba(0, 0, 0, 0.85);
+            padding: 8px;
+            border-radius: 6px;
+            border: 1px solid #333;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="header">BTCUSDT 실시간 호가 잔량</div>
+
+    <div id="chart-container">
+        <div id="number-overlay">호가 수신 대기 중...</div>
+    </div>
+
+    <script>
+        const chartContainer = document.getElementById('chart-container');
+        const chart = LightweightCharts.createChart(chartContainer, {
+            width: chartContainer.clientWidth,
+            height: chartContainer.clientHeight,
+            layout: { background: { color: '#131722' }, textColor: '#d1d4dc' },
+            grid: { vertLines: { color: '#1f293d' }, horzLines: { color: '#1f293d' } },
+            rightPriceScale: { borderColor: '#2b2b43' },
+            timeScale: { borderColor: '#2b2b43', timeVisible: true },
+        });
+
+        const candlestickSeries = chart.addCandlestickSeries({
+            upColor: '#26a69a', downColor: '#ef5350',
+            borderDownColor: '#ef5350', borderUpColor: '#26a69a',
+            wickDownColor: '#ef5350', wickUpColor: '#26a69a',
+        });
+
+        fetch('https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=100')
+            .then(res => res.json())
+            .then(data => {
+                const formatted = data.map(d => ({
+                    time: d[0] / 1000,
+                    open: parseFloat(d[1]),
+                    high: parseFloat(d[2]),
+                    low: parseFloat(d[3]),
+                    close: parseFloat(d[4]),
+                }));
+                candlestickSeries.setData(formatted);
+            });
+
+        const symbol = "btcusdt";
+        const ws = new WebSocket(`wss://fstream.binance.com/ws/${symbol}@depth10@100ms`);
+        const overlayEl = document.getElementById('number-overlay');
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.e === "depthUpdate") {
+                const asks = data.a.slice(0, 5).reverse();
+                const bids = data.b.slice(0, 5);
+
+                let html = "<b style='color:#ef5350;'>[매도 잔량]</b><br>";
+                asks.forEach(item => {
+                    html += `${parseFloat(item[0]).toFixed(1)} : <span style='color:#ffaa00; font-weight:bold;'>${parseFloat(item[1]).toFixed(3)} BTC</span><br>`;
+                });
+                html += "<hr style='border-color:#444; margin: 4px 0;'>";
+                html += "<b style='color:#26a69a;'>[매수 잔량]</b><br>";
+                bids.forEach(item => {
+                    html += `${parseFloat(item[0]).toFixed(1)} : <span style='color:#00aaff; font-weight:bold;'>${parseFloat(item[1]).toFixed(3)} BTC</span><br>`;
+                });
+
+                overlayEl.innerHTML = html;
+            }
+        };
+
+        window.addEventListener('resize', () => {
+            chart.applyOptions({ width: chartContainer.clientWidth, height: chartContainer.clientHeight });
+        });
+    </script>
+</body>
+</html>
 
